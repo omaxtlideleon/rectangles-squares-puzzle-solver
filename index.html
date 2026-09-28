@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{--bg:#0f1720;--panel:#0b1220;--accent:#60a5fa;--muted:#9aa9be;--card:#0b1522}
+  body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial; margin:0; background:linear-gradient(180deg,#071024 0%, #081226 100%); color:#e6eef6}
+  header{padding:18px 20px; display:flex; gap:12px; align-items:center; border-bottom:1px solid rgba(255,255,255,0.04)}
+  h1{font-size:18px;margin:0;color:var(--accent)}
+  main{display:flex; gap:18px; padding:18px}
+  .controls{width:340px; background:var(--panel); padding:14px; border-radius:10px; box-shadow:0 6px 24px rgba(2,6,23,0.6)}
+  label{display:block; font-size:13px; color:var(--muted); margin-top:10px}
+  input[type=number],select,input[type=text]{width:100%; padding:8px 10px; margin-top:6px; border-radius:8px; border:1px solid rgba(255,255,255,0.04); background:#081426; color:#e6eef6}
+  .row{display:flex; gap:8px}
+  button{margin-top:12px; background:var(--accent); border:none; color:#04233f; padding:10px 12px; border-radius:8px; cursor:pointer; font-weight:600}
+  button.secondary{background:#1e293b; color:var(--muted)}
+  .canvas-panel{flex:1; background:var(--card); padding:12px; border-radius:10px; min-height:480px; display:flex; gap:12px}
+  .viz{flex:1; border:1px solid rgba(255,255,255,0.04); border-radius:8px; padding:10px; background:linear-gradient(180deg,#081226,#071428)}
+  canvas{background:#071428; width:100%; height:100%; display:block; border-radius:6px}
+  .info{width:260px; background:var(--panel); border-radius:8px; padding:10px; overflow:auto}
+  ul{padding-left:18px;margin:8px 0}
+  .stat{font-size:13px;color:var(--muted); margin-top:6px}
+  .small{font-size:12px;color:#9fb7d9}
+  .square-row{display:flex; justify-content:space-between; gap:6px; background: rgba(255,255,255,0.01); padding:8px; border-radius:6px; margin-bottom:8px}
+  .controls .hint{font-size:12px; color:#8fa8c9; margin-top:8px}
+</style>
+</head>
+<body>
+
+<main>
+  <div class="controls">
+    <label>Width (X)
+      <input id="inpW" type="number" min="1" value="11">
+    </label>
+    <label>Height (Y)
+      <input id="inpH" type="number" min="1" value="13">
+    </label>
+    <label>Mode
+      <select id="mode">
+        <option value="fast">Fast (heuristic)</option>
+        <option value="exact">Exact (iterative deepening)</option>
+      </select>
+    </label>
+    <label>Max runtime (seconds) — Exact mode (0 = unlimited)
+      <input id="maxTime" type="number" min="0" value="10">
+    </label>
+    <div class="row">
+      <button id="runBtn">Run</button>
+      <button id="stopBtn" class="secondary">Stop</button>
+    </div>
+
+
+    <div class="stat" id="status">Status: idle</div>
+    <div class="stat" id="bestCount">Best found: —</div>
+    <div class="stat" id="timeElapsed">Time: 0s</div>
+    <div class="stat" id="nodes">Search nodes: 0</div>
+  </div>
+
+  <div class="canvas-panel">
+    <div class="viz">
+      <canvas id="canvas" width="700" height="700"></canvas>
+    </div>
+    <div class="info">
+      <div style="font-weight:700">Solution</div>
+      <div class="small" id="solSummary">No solution yet.</div>
+      <div style="margin-top:8px" id="squaresList"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let WIDTH = 11, HEIGHT = 13;
+let finalElapsed = 0;
+const runBtn = document.getElementById('runBtn');
+const stopBtn = document.getElementById('stopBtn');
+const inpW = document.getElementById('inpW');
+const inpH = document.getElementById('inpH');
+const modeSel = document.getElementById('mode');
+const maxTimeInp = document.getElementById('maxTime');
+
+const statusDOM = document.getElementById('status');
+const bestCountDOM = document.getElementById('bestCount');
+const timeDOM = document.getElementById('timeElapsed');
+const nodesDOM = document.getElementById('nodes');
+const solSummary = document.getElementById('solSummary');
+const squaresList = document.getElementById('squaresList');
+
+let stopFlag = false;
+let running = false;
+
+let nodesVisited = 0;
+let bestSolution = null;
+let bestCount = Infinity;
+let startTime = 0;
+let maxTimeMs = 0;
+
+function gridCreate(w,h){
+  let g=[];
+  for(let y=0;y<h;y++){ g.push(new Array(w).fill(0)); }
+  return g;
+}
+function findEmpty(g){
+  for(let y=0;y<g.length;y++){
+    for(let x=0;x<g[0].length;x++) if(g[y][x]===0) return [x,y];
+  }
+  return null;
+}
+function canPlace(g,x,y,s){
+  if(x+s>g[0].length||y+s>g.length) return false;
+  for(let yy=y;yy<y+s;yy++) for(let xx=x;xx<x+s;xx++)
+    if(g[yy][xx]!==0) return false;
+  return true;
+}
+function place(g,x,y,s,val){
+  for(let yy=y;yy<y+s;yy++) for(let xx=x;xx<x+s;xx++)
+    g[yy][xx]=val;
+}
+function cloneSol(sol){ return sol.map(r=>({...r})); }
+
+function drawSolution(sol){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="#071428"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  if(!sol){ return; }
+  const scale=Math.min(canvas.width/WIDTH, canvas.height/HEIGHT);
+  sol.forEach((sq,i)=>{
+    const colors=["#60a5fa","#34d399","#fbbf24","#f472b6","#a78bfa","#f87171","#22d3ee","#e879f9","#bef264","#facc15"];
+    ctx.fillStyle=colors[i%colors.length];
+    ctx.fillRect(sq.x*scale,sq.y*scale,sq.s*scale,sq.s*scale);
+    ctx.strokeStyle="#0f172a"; ctx.lineWidth=2;
+    ctx.strokeRect(sq.x*scale,sq.y*scale,sq.s*scale,sq.s*scale);
+  });
+}
+function finishSolve(){
+  running = false;
+  finalElapsed = (performance.now() - startTime) / 1000;
+  updateStatus();
+}
+function solveFast(w,h){
+  resetStats();
+  let g=gridCreate(w,h);
+  let solution=[];
+  function dfs(){
+    if(stopFlag) return;
+    nodesVisited++;
+    let empty=findEmpty(g);
+    if(!empty){
+      if(solution.length<bestCount){
+        bestCount=solution.length;
+        bestSolution=cloneSol(solution);
+        reportSolution();
+      }
+      return;
+    }
+    let [x,y]=empty;
+    let maxS=Math.min(w-x,h-y);
+    for(let s=maxS;s>=1;s--){
+      if(canPlace(g,x,y,s)){
+        place(g,x,y,s,1);
+        solution.push({x,y,s});
+        if(solution.length<bestCount){
+          dfs();
+        }
+        solution.pop();
+        place(g,x,y,s,0);
+      }
+    }
+  }
+  dfs();
+  finishSolve();
+}
+
+async function solveExact(w,h){
+  resetStats();
+  let g=gridCreate(w,h);
+  let solution=[];
+  let found=false;
+  for(let depth=1; depth<=w*h; depth++){
+    if(found||stopFlag) break;
+    bestCount=depth+1;
+    async function dfs(level){
+      if(stopFlag) return;
+      nodesVisited++;
+      if(performance.now()-startTime>maxTimeMs && maxTimeMs>0){
+        stopFlag=true; return;
+      }
+      let empty=findEmpty(g);
+      if(!empty){
+        bestCount=solution.length;
+        bestSolution=cloneSol(solution);
+        found=true;
+        reportSolution();
+        return;
+      }
+      if(solution.length>=depth) return;
+      let [x,y]=empty;
+      let maxS=Math.min(w-x,h-y);
+      for(let s=maxS;s>=1;s--){
+        if(canPlace(g,x,y,s)){
+          place(g,x,y,s,1);
+          solution.push({x,y,s});
+          await dfs(level+1);
+          solution.pop();
+          place(g,x,y,s,0);
+          if(found) return;
+        }
+      }
+    }
+    await dfs(0);
+  }
+  finishSolve();
+}
+
+function reportSolution(){
+  if(!bestSolution) return;
+  drawSolution(bestSolution);
+  solSummary.textContent="Squares used: "+bestSolution.length;
+  squaresList.innerHTML="";
+  bestSolution.forEach((sq,i)=>{
+    const div=document.createElement("div");
+    div.className="square-row small";
+    div.textContent=`${i+1}. ${sq.s}×${sq.s} at (${sq.x},${sq.y})`;
+    squaresList.appendChild(div);
+  });
+}
+function resetStats(){
+  nodesVisited = 0;
+  bestSolution = null;
+  bestCount = Infinity;
+  startTime = performance.now();
+  finalElapsed = 0;
+  maxTimeMs = parseFloat(maxTimeInp.value)*1000;
+  if (isNaN(maxTimeMs)) maxTimeMs = 0;
+  stopFlag = false;
+  running = true;
+}
+function updateStatus(){
+  if (running){
+    const dt = ((performance.now() - startTime) / 1000).toFixed(2);
+    statusDOM.textContent = stopFlag ? "Status: stopping..." : "Status: running";
+    timeDOM.textContent = "Time: " + dt + "s";
+  } else {
+    const dt = finalElapsed.toFixed(2);
+    statusDOM.textContent = "Status: idle";
+    timeDOM.textContent = "Time: " + dt + "s";
+  }
+  bestCountDOM.textContent = "Best found: " + (bestCount===Infinity ? "—" : bestCount);
+  nodesDOM.textContent = "Search nodes: " + nodesVisited;
+}
+
+runBtn.addEventListener('click', () => {
+  WIDTH = Math.max(1, parseInt(inpW.value)||1);
+  HEIGHT = Math.max(1, parseInt(inpH.value)||1);
+  stopFlag = false;
+  nodesVisited = 0;
+  bestSolution = null;
+  bestCount = Infinity;
+  startTime = performance.now();
+  running = true;
+  updateStatus();
+  solSummary.textContent = "Running...";
+  squaresList.innerHTML = "";
+  const mode = modeSel.value;
+  if (mode === 'fast'){
+    setTimeout(()=>{ solveFast(WIDTH, HEIGHT); }, 10);
+  } else if (mode === 'exact'){
+    setTimeout(()=>{ solveExact(WIDTH, HEIGHT); }, 10);
+  }
+});
+
+stopBtn.addEventListener('click', ()=>{
+  stopFlag = true;
+  running = false;
+  updateStatus();
+});
+
+setInterval(()=>{ updateStatus(); }, 250);
+</script>
+</body>
+</html>
